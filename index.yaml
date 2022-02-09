@@ -1,82 +1,14 @@
 apiVersion: v1
 entries:
-  ibm-catalogs:
-  - apiVersion: v2
-    appVersion: "1.0"
-    created: "2022-02-08T23:04:55.046958391Z"
-    description: A Helm chart for Kubernetes
-    digest: a2041601792e147b6533e396fe12a75eefd0b643bf9b85b69179bc8378a54dc0
-    name: ibm-catalogs
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/ibm-catalogs-0.3.1/ibm-catalogs-0.3.1.tgz
-    version: 0.3.1
-  ibm-cp4d-watson-studio-instance:
+  ibm-cp4d-watson-knowledge-catalog-instance:
   - apiVersion: v2
     appVersion: 4.0.4
-    created: "2022-02-08T23:04:55.226100709Z"
+    created: "2022-02-09T17:17:02.217789749Z"
     description: A Helm chart for Kubernetes
-    digest: eae1a08cddd8f4be298607cc50360ca0bba746e05b0c61fa475c6f20e444320c
-    name: ibm-cp4d-watson-studio-instance
+    digest: b678d25cafbddfd3a439367f813c755c4cb9a77ecd8cab24fbdcd9862ef20ee5
+    name: ibm-cp4d-watson-knowledge-catalog-instance
     type: application
     urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/ibm-cp4d-watson-studio-instance-0.1.2/ibm-cp4d-watson-studio-instance-0.1.2.tgz
-    version: 0.1.2
-  ibm-cpd-platform-instance:
-  - apiVersion: v2
-    appVersion: 4.0.4
-    created: "2022-02-08T23:04:55.394963406Z"
-    description: A Helm chart for Kubernetes
-    digest: 0d7831cc4afb0ba95f4248008cb2be8dcd45cc95d8a63a9250a00f89108d6799
-    name: ibm-cpd-platform-instance
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/ibm-cpd-platform-instance-0.1.2/ibm-cpd-platform-instance-0.1.2.tgz
-    version: 0.1.2
-  ibm-platform-navigator:
-  - apiVersion: v2
-    appVersion: 1.16.0
-    created: "2022-02-08T23:04:55.579994478Z"
-    description: A Helm chart for Kubernetes
-    digest: ac4a7b9534d76acc0ac51c164b3f15c1d2d220c2aee0768d75c2a3c6fb448566
-    name: ibm-platform-navigator
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/ibm-platform-navigator-0.3.0/ibm-platform-navigator-0.3.0.tgz
-    version: 0.3.0
-  odf-operator:
-  - apiVersion: v2
-    appVersion: 0.1.0
-    created: "2022-02-08T23:04:55.75721411Z"
-    description: A Helm chart for deploying infrastrucure reference architecture to
-      OpenShift 4.x clusters
-    digest: f9b82ed6347a7bc68511c4a94dbbfbe4f88f593385afa216d70c2c7e55346087
-    name: odf-operator
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/odf-operator-0.1.1/odf-operator-0.1.1.tgz
-    version: 0.1.1
-  refarch-machinesets:
-  - apiVersion: v2
-    appVersion: 0.1.0
-    created: "2022-02-08T23:04:55.927111499Z"
-    description: A Helm chart for deploying infrastrucure reference architecture to
-      OpenShift 4.x clusters
-    digest: 2238a2bded1f705ff48b8e57d0a64190d476e4a68ed866301e0c4deee0f02dec
-    name: refarch-machinesets
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/refarch-machinesets-0.4.2/refarch-machinesets-0.4.2.tgz
-    version: 0.4.2
-  service-account:
-  - apiVersion: v2
-    appVersion: 1.16.0
-    created: "2022-02-08T23:04:56.097576284Z"
-    description: A Helm chart for Kubernetes
-    digest: 7b7fe45a50543c0fb3af93c5ad4a53dcba625c2c95731ba5dc352c276e21367c
-    name: service-account
-    type: application
-    urls:
-    - https://github.com/atbijo/toolkit-charts/releases/download/service-account-0.6.1/service-account-0.6.1.tgz
-    version: 0.6.1
-generated: "2022-02-08T23:04:54.728888645Z"
+    - https://github.com/atbijo/toolkit-charts/releases/download/ibm-cp4d-watson-knowledge-catalog-instance-0.1.0/ibm-cp4d-watson-knowledge-catalog-instance-0.1.0.tgz
+    version: 0.1.0
+generated: "2022-02-09T17:17:02.054406662Z"

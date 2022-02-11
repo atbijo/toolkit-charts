@@ -3,12 +3,12 @@ entries:
   ibm-cp4d-watson-knowledge-catalog-instance:
   - apiVersion: v2
     appVersion: 4.0.4
-    created: "2022-02-09T17:17:02.217789749Z"
+    created: "2022-02-11T15:54:55.4648421Z"
     description: A Helm chart for Kubernetes
-    digest: b678d25cafbddfd3a439367f813c755c4cb9a77ecd8cab24fbdcd9862ef20ee5
+    digest: 54d427431734cec7784b2a0f1c0e2b335bf79b4424a9815d3b5df0f8f3a9d979
     name: ibm-cp4d-watson-knowledge-catalog-instance
     type: application
     urls:
     - https://github.com/atbijo/toolkit-charts/releases/download/ibm-cp4d-watson-knowledge-catalog-instance-0.1.0/ibm-cp4d-watson-knowledge-catalog-instance-0.1.0.tgz
     version: 0.1.0
-generated: "2022-02-09T17:17:02.054406662Z"
+generated: "2022-02-11T15:54:55.192121895Z"

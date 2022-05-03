@@ -3,7 +3,7 @@
 Expand the name of the chart.
 */}}
 {{- define "openshift-gitops-instance.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- default "openshift-gitops" .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -15,7 +15,7 @@ If release name contains chart name it will be used as a full name.
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- $name := default "openshift-gitops" .Values.nameOverride -}}
 {{- if contains $name .Release.Name -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -40,6 +40,9 @@ helm.sh/chart: {{ include "openshift-gitops-instance.chart" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
+{{- if .Values.createdBy }}
+created-by: {{ .Values.createdBy | quote }}
+{{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
@@ -60,4 +63,12 @@ Create the name of the service account to use
 {{- else -}}
     {{ default "default" .Values.serviceAccount.name }}
 {{- end -}}
+{{- end -}}
+
+{{- define "openshift-gitops-instance.argocd-name" -}}
+{{- if eq .Release.Namespace "openshift-gitops" }}
+{{- .Release.Namespace }}
+{{- else }}
+{{- printf "%s-gitops" .Release.Namespace }}
+{{- end }}
 {{- end -}}

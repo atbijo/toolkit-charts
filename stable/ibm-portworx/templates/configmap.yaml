@@ -1,0 +1,391 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ibm-portworx.fullname" . }}
+  namespace: {{ include "ibm-portworx.namespace" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    helm.sh/hook-weight: "-5"
+  labels:
+    {{- include "ibm-portworx.labels" . | nindent 4 }}
+data:
+  support-functions.sh: |
+    #!/usr/bin/env bash
+
+    API_VERSION="2021-04-06"
+
+    get_token() {
+      local API_KEY="$1"
+
+      TOKEN=$(curl -s -X POST "https://iam.cloud.ibm.com/identity/token" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=${API_KEY}" | jq -r '.access_token')
+
+      if [[ -z "${TOKEN}" ]]; then
+        echo "Error retrieving auth token" >&2
+        exit 1
+      fi
+    }
+
+    get_volume_id() {
+      local REGION="$1"
+      local NAME="$2"
+
+      VOLUME_ID=$(curl -s -X GET "https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2&name=${NAME}" \
+        -H "Authorization: Bearer ${TOKEN}" | \
+        jq -r --arg NAME "${NAME}" '.volumes[] | select(.name == $NAME) | .id // empty')
+    }
+
+    create_volume() {
+      local REGION="$1"
+      local NAME="$2"
+      local DATA="$3"
+
+      curl -s -X POST "https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2" \
+        -H "Authorization: Bearer $TOKEN" \
+        -d "${DATA}"
+
+      get_volume_id "${REGION}" "${NAME}"
+    }
+
+    wait_for_volume() {
+      local REGION="$1"
+      local VOLUME_ID="$2"
+
+      echo "Waiting for volume to be ready: ${VOLUME_ID}"
+
+      count=0
+      STATUS="pending"
+      while [[ "${STATUS}" == "pending" ]] || [[ $count -gt 20 ]]; do
+        local VOLUME=$(curl -s -X GET "https://${REGION}.iaas.cloud.ibm.com/v1/volumes/${VOLUME_ID}?version=${API_VERSION}&generation=2" \
+          -H "Authorization: Bearer ${TOKEN}" | jq -c '.')
+
+        STATUS=$(echo "${VOLUME}" | jq -r '.status')
+
+        if [[ "${STATUS}" == "pending" ]]; then
+          echo "Volume is still pending. Sleeping for 30 seconds..."
+          count=$((count + 1))
+          sleep 30
+        fi
+      done
+
+      if [[ $count -gt 20 ]]; then
+        echo "Timed out waiting for volume: ${VOLUME_ID}" >&2
+        exit 1
+      fi
+
+      echo "Volume is available: ${VOLUME_ID}"
+    }
+  volume-attach.sh: |+
+    #!/usr/bin/env bash
+
+    SCRIPT_DIR=$(cd $(dirname "$0"); pwd -P)
+
+    RESOURCE_GROUP_ID="$1"
+    REGION="$2"
+    WORKER_ID="$3"
+    CLUSTER_ID="$4"
+
+    if [[ -z "${RESOURCE_GROUP_ID}" ]] || [[ -z "${REGION}" ]] ||  [[ -z "${WORKER_ID}" ]] || [[ -z "${CLUSTER_ID}" ]]; then
+      echo "usage: volume-attach.sh RESOURCE_GROUP_ID REGION WORKER_ID CLUSTER_ID" >&2
+      exit 1
+    fi
+
+    if [[ -z "${IBMCLOUD_API_KEY}" ]]; then
+      echo "IBMCLOUD_API_KEY must be provided as an environment variable" >&2
+      exit 1
+    fi
+
+    if ! command -v curl 1> /dev/null 2> /dev/null; then
+      echo "curl command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v jq 1> /dev/null 2> /dev/null; then
+      echo "jq command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v kubectl 1> /dev/null 2> /dev/null; then
+      echo "kubectl command not found" >&2
+      exit 1
+    fi
+
+    source "${SCRIPT_DIR}/support-functions.sh"
+
+    NAME="pwx-${WORKER_ID}"
+
+    get_token "${IBMCLOUD_API_KEY}"
+
+    get_volume_id "${REGION}" "${NAME}"
+
+    # Before creating, check to see if attachment for volume is already present
+    if ! RESPONSE=$(curl -s -X GET \
+            -H "Authorization: ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Resource-Group-ID: ${RESOURCE_GROUP_ID}" \
+            "https://${REGION}.containers.cloud.ibm.com/v2/storage/getAttachments?cluster=${CLUSTER_ID}&worker=${WORKER_ID}"
+    ); then
+      echo "Error when trying to /getAttachments" >&2
+      exit 1
+    fi
+
+    ID=$(echo "${RESPONSE}" | jq -r --arg VOLUME_ID "$VOLUME_ID" '.volume_attachments[] | select(.volume.id==$VOLUME_ID) | .id // empty')
+
+    if [[ -z "${ID}" ]]; then
+        if ! RESPONSE=$(
+            curl -s -X POST "https://containers.cloud.ibm.com/global/v2/storage/createAttachment" \
+              -H "accept: application/json" \
+              -H "Authorization: ${TOKEN}" \
+              -H "X-Auth-Resource-Group-ID: ${RESOURCE_GROUP_ID}" \
+              -H "Content-Type: application/json" \
+              -d "{  \"cluster\": \"${CLUSTER_ID}\",  \"volumeID\": \"${VOLUME_ID}\",  \"worker\": \"${WORKER_ID}\" }"
+        ); then
+          echo "Error when trying to /createAttachment"
+          exit 1
+        fi
+
+        ID=$(echo "${RESPONSE}" | jq -r '.id // empty')
+
+        if [[ -z "${ID}" ]]; then
+            echo "/createAttachment did not work: ${RESPONSE}" >&2
+            exit 1
+        fi
+
+        echo "Created attachment for ${CLUSTER_ID}, ${WORKER_ID} and ${VOLUME_ID}: ${ID}"
+        echo 'Sleeping for 1 minute...'
+        sleep 1m # it takes some seconds for the attachment to stabilize and propagate
+    else
+      echo "Attachment already exists: ${RESPONSE}"
+    fi
+
+  volume-attachment-destroy.sh: |
+    #!/bin/bash
+
+    SCRIPT_DIR=$(cd $(dirname "$0"); pwd -P)
+
+    RESOURCE_GROUP_ID="$1"
+    REGION="$2"
+    WORKER_ID="$3"
+    CLUSTER_ID="$4"
+
+    if [[ -z "${RESOURCE_GROUP_ID}" ]] || [[ -z "${REGION}" ]] ||  [[ -z "${WORKER_ID}" ]] || [[ -z "${CLUSTER_ID}" ]]; then
+      echo "usage: volume-attachment-destroy.sh RESOURCE_GROUP_ID REGION WORKER_ID CLUSTER_ID" >&2
+      exit 1
+    fi
+
+    if [[ -z "${IBMCLOUD_API_KEY}" ]]; then
+      echo "IBMCLOUD_API_KEY must be provided as an environment variable" >&2
+      exit 1
+    fi
+
+    if ! command -v curl 1> /dev/null 2> /dev/null; then
+      echo "curl command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v jq 1> /dev/null 2> /dev/null; then
+      echo "jq command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v kubectl 1> /dev/null 2> /dev/null; then
+      echo "kubectl command not found" >&2
+      exit 1
+    fi
+
+    source "${SCRIPT_DIR}/support-functions.sh"
+
+    NAME="pwx-${WORKER_ID}"
+
+    get_token "${IBMCLOUD_API_KEY}"
+
+    get_volume_id "${REGION}" "${NAME}"
+
+    echo "Detaching volume $VOLUME_ID from worker $WORKER_ID"
+
+    # Grab volume attachment id
+    if ! RESPONSE=$(
+        curl -s -X GET -H "Authorization: $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Resource-Group-ID: $RESOURCE_GROUP_ID" \
+            "https://$REGION.containers.cloud.ibm.com/v2/storage/getAttachments?cluster=$CLUSTER_ID&worker=$WORKER_ID"
+    ); then
+      echo 'Error when trying to /getAttachments' >&2
+      exit 1
+    fi
+
+    ID=$(echo "${RESPONSE}" | jq -r --arg VOLUMEID "$VOLUME_ID" '.volume_attachments[] | select(.volume.id==$VOLUMEID) | .id // empty')
+
+    if [[ -z "${ID}" ]]; then
+        echo "No attachment found, skipping"
+    else
+        echo "Deleting volume attachment $ID"
+        if ! curl -s -X DELETE -H "Authorization: $TOKEN" \
+            "https://$REGION.containers.cloud.ibm.com/v2/storage/vpc/deleteAttachment?cluster=$CLUSTER_ID&worker=$WORKER_ID&volumeAttachmentID=$ID"; then
+          echo 'Delete failed' >&2
+          exit 1
+        fi
+        echo 'Sleeping for 30s...'
+        sleep 30
+    fi
+  volume-create.sh: |
+    #!/usr/bin/env bash
+
+    SCRIPT_DIR=$(cd $(dirname "$0"); pwd -P)
+
+    NODE_NAME="$1"
+    RESOURCE_GROUP_ID="$2"
+
+    if [[ -z "${NODE_NAME}" ]] || [[ -z "${RESOURCE_GROUP_ID}" ]]; then
+      echo "usage: create-volume.sh NODE_NAME RESOURCE_GROUP_ID" >&2
+      exit 1
+    fi
+
+    if [[ -z "${IBMCLOUD_API_KEY}" ]]; then
+      echo "IBMCLOUD_API_KEY must be provided as an environment variable" >&2
+      exit 1
+    fi
+
+    if ! command -v curl 1> /dev/null 2> /dev/null; then
+      echo "curl command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v jq 1> /dev/null 2> /dev/null; then
+      echo "jq command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v kubectl 1> /dev/null 2> /dev/null; then
+      echo "kubectl command not found" >&2
+      exit 1
+    fi
+
+    source "${SCRIPT_DIR}/support-functions.sh"
+
+    ## Lookup zone and resource group from the cluster
+    NODE_JSON=$(kubectl get node "${NODE_NAME}" -o json)
+
+    REGION=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/region"]')
+    ZONE=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/zone"]')
+    WORKER_ID=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/worker-id"]')
+
+    echo "Node values: region=${REGION}, zone=${ZONE}, workerId=${WORKER_ID}"
+
+    NAME="pwx-${WORKER_ID}"
+
+    if [[ -z "${IOPS}" ]]; then
+      IOPS="100"
+      echo "IOPS environment variable not provided. Defaulting to '${IOPS}'"
+    fi
+    if [[ -z "${CAPACITY}" ]]; then
+      CAPACITY="50"
+      echo "CAPACITY environment variable not provided. Defaulting to '${CAPACITY}'"
+    fi
+    if [[ -z "${PROFILE}" ]]; then
+      PROFILE="custom"
+      echo "PROFILE environment variable not provided. Defaulting to '${PROFILE}'"
+    fi
+    if [[ -z "${ENCRYPTION_KEY}" ]]; then
+      echo "ENCRYPTION_KEY environment variable not provided. The volume won't be encrypted with KMS."
+    fi
+
+    jq -n \
+      --arg NAME "${NAME}" \
+      --arg ZONE "${ZONE}" \
+      --arg RESOURCE_GROUP_ID "${RESOURCE_GROUP_ID}" \
+      --argjson IOPS "${IOPS}" \
+      --argjson CAPACITY "${CAPACITY}" \
+      --arg PROFILE "${PROFILE}" \
+      '{"name": $NAME, "iops": $IOPS, "capacity": $CAPACITY, "zone": {"name": $ZONE}, "profile": {"name": $PROFILE}, "resource_group": {"id": $RESOURCE_GROUP_ID}}' > /tmp/volume-request.json
+
+    if [[ -n "${ENCRYPTION_KEY}" ]]; then
+      cat /tmp/volume-request.json | jq --arg ENCRYPTION_KEY "${ENCRYPTION_KEY}" \
+        '.encryption_key = {"crn": $ENCRYPTION_KEY}' > /tmp/volume-request.json.bak && \
+        cp /tmp/volume-request.json.bak /tmp/volume-request.json && \
+        rm /tmp/volume-request.json.bak
+    fi
+
+    echo "Getting auth token"
+
+    get_token "${IBMCLOUD_API_KEY}" || exit 1
+
+    echo "Looking up exiting volume: ${NAME}"
+
+    ## Check if volume already exists
+    get_volume_id "${REGION}" "${NAME}"
+
+    if [[ -z "${VOLUME_ID}" ]]; then
+      echo "Volume not found: ${NAME}"
+
+      echo "Creating volume: "
+      jq '.' /tmp/volume-request.json
+
+      create_volume "${REGION}" $(jq -c '.' /tmp/volume-request.json)
+    else
+      echo "Existing volume found: ${NAME}"
+    fi
+
+    echo "Waiting for volume"
+
+    wait_for_volume "${REGION}" "${VOLUME_ID}"
+  volume-manage.sh: |
+    #!/usr/bin/env bash
+
+    SCRIPT_DIR=$(cd $(dirname "$0"); pwd -P)
+
+    if [[ -z "${NODE_NAME}" ]] || [[ -z "${RESOURCE_GROUP_ID}" ]]; then
+      echo "NODE_NAME and RESOURCE_GROUP_ID should be provided as environment variables" >&2
+      exit 1
+    fi
+
+    NODE_JSON=$(kubectl get node "${NODE_NAME}" -o json)
+
+    REGION=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/region"]')
+    WORKER_ID=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/worker-id"]')
+    PROVIDER_ID=$(echo "${NODE_JSON}" | jq -r '.spec.providerID')
+    CLUSTER_ID=$(echo "${PROVIDER_ID}" | sed -E 's~ibm://.*/([^/]+)/.+~\1~g')
+
+    echo "Node values: region=${REGION}, workerId=${WORKER_ID}, clusterId=${CLUSTER_ID}"
+
+    exit_script() {
+        echo "SIGTERM received!"
+        echo "Cleaning up volume attachment"
+        "${SCRIPT_DIR}/volume-attachment-destroy.sh" "${RESOURCE_GROUP_ID}" "${REGION}" "${WORKER_ID}" "${CLUSTER_ID}"
+        EXIT="true"
+    }
+
+    trap exit_script SIGINT SIGTERM
+
+    "${SCRIPT_DIR}/volume-attach.sh" "${RESOURCE_GROUP_ID}" "${REGION}" "${WORKER_ID}" "${CLUSTER_ID}"
+
+    while [[ "${EXIT}" != "true" ]]; do sleep 10; done
+  write-config-secret.sh: |
+    #!/usr/bin/env bash
+
+    NODE_NAME="$1"
+    NAMESPACE="$2"
+    SECRET_NAME="$3"
+
+    if [[ -z "${NODE_NAME}" ]] || [[ -z "${NAMESPACE}" ]] || [[ -z "${SECRET_NAME}" ]]; then
+      echo "usage: write-config-secret.sh NODE_NAME NAMESPACE SECRET_NAME" >&2
+      exit 1
+    fi
+
+    echo "Getting providerID from node: ${NODE_NAME}"
+
+    PROVIDER_ID=$(oc get node "${NODE_NAME}" -o json | jq -r '.spec.providerID')
+    CLUSTER_ID=$(echo "${PROVIDER_ID}" | sed -E 's~ibm://.*/([^/]+)/.+~\1~g')
+
+    echo "Found clusterId: ${CLUSTER_ID}"
+
+    echo "Creating secret: ${SECRET_NAME}"
+
+    kubectl create secret generic "${SECRET_NAME}" \
+      --from-literal="clusterId=${CLUSTER_ID}" \
+      --dry-run=client \
+      --output=json | \
+      kubectl apply -n "${NAMESPACE}" -f -
+
+    echo "Created secret: ${SECRET_NAME}"

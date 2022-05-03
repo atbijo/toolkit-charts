@@ -6,10 +6,18 @@ metadata:
   labels:
     {{- include "operator.labels" . | nindent 4 }}
   annotations:
-    "helm.sh/hook": pre-install
+    argocd.argoproj.io/sync-wave: "-5"
 spec:
   channel: {{ include "operator.channel" . }}
   installPlanApproval: Automatic
   name: {{ include "operator.catalog-name" . }}
   source: {{ include "operator.source" . }}
   sourceNamespace: {{ include "operator.olm-namespace" . }}
+  config:
+    resources:
+      limits:
+        cpu: 400m
+        memory: 700Mi
+      requests:
+        cpu: 400m
+        memory: 40Mi

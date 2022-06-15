@@ -32,3 +32,11 @@ region: ""
 
 plan: px-enterprise
 etcdSecretName: ""
+
+volume:
+  iops: ""
+  capacity: 200
+  profile: 10iops-tier
+  encryption_key: ""
+
+serviceSuffix: ""

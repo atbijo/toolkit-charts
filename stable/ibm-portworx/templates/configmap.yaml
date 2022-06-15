@@ -31,7 +31,11 @@ data:
       local REGION="$1"
       local NAME="$2"
 
-      VOLUME_ID=$(curl -s -X GET "https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2&name=${NAME}" \
+      local URL="https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2&name=${NAME}"
+
+      echo "Getting volume id: ${URL}"
+
+      VOLUME_ID=$(curl -s -X GET "${URL}" \
         -H "Authorization: Bearer ${TOKEN}" | \
         jq -r --arg NAME "${NAME}" '.volumes[] | select(.name == $NAME) | .id // empty')
     }
@@ -41,7 +45,12 @@ data:
       local NAME="$2"
       local DATA="$3"
 
-      curl -s -X POST "https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2" \
+      local URL="https://${REGION}.iaas.cloud.ibm.com/v1/volumes?version=${API_VERSION}&generation=2"
+
+      echo "Creating volume using url: ${URL}"
+      echo "  Data: ${DATA}"
+
+      curl -s -X POST "${URL}" \
         -H "Authorization: Bearer $TOKEN" \
         -d "${DATA}"
 
@@ -76,6 +85,66 @@ data:
 
       echo "Volume is available: ${VOLUME_ID}"
     }
+  update-resource-owner.sh: |
+    #!/usr/bin/env bash
+
+    if ! command -v jq 1> /dev/null 2> /dev/null; then
+      echo "jq command not found" >&2
+      exit 1
+    fi
+
+    if ! command -v oc 1> /dev/null 2> /dev/null; then
+      echo "oc command not found" >&2
+      exit 1
+    fi
+
+    if [[ -z "${SERVICE_NAME}" ]]; then
+      echo "SERVICE_NAME environment variable is required" >&2
+      exit 1
+    fi
+
+    if [[ -z "${NAMESPACE}" ]]; then
+      NAMESPACE="kube-system"
+    fi
+
+    SERVICE_JSON=$(oc get services.ibmcloud -n "${NAMESPACE}" "${SERVICE_NAME}" -o json)
+    SERVICE_UID=$(echo "${SERVICE_JSON}" | jq -r '.metadata.uid')
+    SERVICE_API_VERSION=$(echo "${SERVICE_JSON}" | jq -r '.apiVersion')
+    SERVICE_KIND=$(echo "${SERVICE_JSON}" | jq -r '.kind')
+
+    PATCH=$(jq -n -c --arg UID "${SERVICE_UID}" --arg API_VERSION "${SERVICE_API_VERSION}" --arg KIND "${SERVICE_KIND}" \
+      '{"metadata": {"ownerReferences": [{"apiVersion": $API_VERSION, "kind": $KIND, "uid": $UID}]}}')
+
+    oc get serviceaccount,service,configmap,job,deployment,daemonset,statefulset -n "${NAMESPACE}" -l app.kubernetes.io/instance=portworx -o json | \
+    jq -c '.items[] | {"name": .metadata.name, "kind": .kind}' | \
+    while read resource; do
+      kind=$(echo "${resource}" | jq -r '.kind')
+      name=$(echo "${resource}" | jq -r '.name')
+
+      oc patch -n "${NAMESPACE}" "${kind}" "${name}" -p "${PATCH}"
+    done
+
+    if oc get deployment -n "${NAMESPACE}" portworx-pvc-controller 1> /dev/null 2> /dev/null; then
+      oc get deployment -n "${NAMESPACE}" portworx-pvc-controller -o json | \
+      jq -c '{"name": .metadata.name, "kind": .kind}' | \
+      while read resource; do
+        kind=$(echo "${resource}" | jq -r '.kind')
+        name=$(echo "${resource}" | jq -r '.name')
+
+        oc patch -n "${NAMESPACE}" "${kind}" "${name}" -p "${PATCH}"
+      done
+    fi
+
+    if oc get sa -n "${NAMESPACE}" portworx-pvc-controller-account 1> /dev/null 2> /dev/null; then
+      oc get sa -n "${NAMESPACE}" portworx-pvc-controller-account -o json | \
+      jq -c '{"name": .metadata.name, "kind": .kind}' | \
+      while read resource; do
+        kind=$(echo "${resource}" | jq -r '.kind')
+        name=$(echo "${resource}" | jq -r '.name')
+
+        oc patch -n "${NAMESPACE}" "${kind}" "${name}" -p "${PATCH}"
+      done
+    fi
   volume-attach.sh: |+
     #!/usr/bin/env bash
 
@@ -271,34 +340,54 @@ data:
     ZONE=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/zone"]')
     WORKER_ID=$(echo "${NODE_JSON}" | jq -r '.metadata.labels["ibm-cloud.kubernetes.io/worker-id"]')
 
+    CLUSTER_ID=$(echo "${NODE_JSON}" | jq -r '.spec.providerID' | sed -E 's~.*/([^/]+)/[^/]+~\1~g')
+
+    CLUSTER_ID
+
     echo "Node values: region=${REGION}, zone=${ZONE}, workerId=${WORKER_ID}"
 
     NAME="pwx-${WORKER_ID}"
 
-    if [[ -z "${IOPS}" ]]; then
+    if [[ -z "${PROFILE}" ]]; then
+      PROFILE="custom"
+      echo "PROFILE environment variable not provided. Defaulting to '${PROFILE}'"
+    fi
+    if [[ -z "${IOPS}" ]] && [[ "${PROFILE}" == "custom" ]]; then
       IOPS="100"
       echo "IOPS environment variable not provided. Defaulting to '${IOPS}'"
+    fi
+    if [[ -n "${IOPS}" ]] && [[ "${PROFILE}" != "custom" ]]; then
+      IOPS=""
     fi
     if [[ -z "${CAPACITY}" ]]; then
       CAPACITY="50"
       echo "CAPACITY environment variable not provided. Defaulting to '${CAPACITY}'"
     fi
-    if [[ -z "${PROFILE}" ]]; then
-      PROFILE="custom"
-      echo "PROFILE environment variable not provided. Defaulting to '${PROFILE}'"
-    fi
     if [[ -z "${ENCRYPTION_KEY}" ]]; then
       echo "ENCRYPTION_KEY environment variable not provided. The volume won't be encrypted with KMS."
     fi
+
+    TAGS=$(jq -n \
+      --arg CLUSTER_TAG "clusterid:${CLUSTER_ID}" \
+      --arg WORKER_TAG "workerid:${WORKER_ID}" \
+      '[$CLUSTER_TAG, $WORKER_TAG, "source:portworx"]')
 
     jq -n \
       --arg NAME "${NAME}" \
       --arg ZONE "${ZONE}" \
       --arg RESOURCE_GROUP_ID "${RESOURCE_GROUP_ID}" \
-      --argjson IOPS "${IOPS}" \
       --argjson CAPACITY "${CAPACITY}" \
       --arg PROFILE "${PROFILE}" \
-      '{"name": $NAME, "iops": $IOPS, "capacity": $CAPACITY, "zone": {"name": $ZONE}, "profile": {"name": $PROFILE}, "resource_group": {"id": $RESOURCE_GROUP_ID}}' > /tmp/volume-request.json
+      --argjson TAGS "${TAGS}" \
+      '{"name": $NAME, "capacity": $CAPACITY, "zone": {"name": $ZONE}, "profile": {"name": $PROFILE}, "resource_group": {"id": $RESOURCE_GROUP_ID}, "user_tags": $TAGS}' \
+      > /tmp/volume-request.json
+
+    if [[ -n "${IOPS}" ]]; then
+      cat /tmp/volume-request.json | jq --argjson IOPS "${IOPS}" \
+        '. += {"iops": $IOPS}' > /tmp/volume-request.json.bak && \
+        cp /tmp/volume-request.json.bak /tmp/volume-request.json && \
+        rm /tmp/volume-request.json.bak
+    fi
 
     if [[ -n "${ENCRYPTION_KEY}" ]]; then
       cat /tmp/volume-request.json | jq --arg ENCRYPTION_KEY "${ENCRYPTION_KEY}" \
@@ -311,7 +400,7 @@ data:
 
     get_token "${IBMCLOUD_API_KEY}" || exit 1
 
-    echo "Looking up exiting volume: ${NAME}"
+    echo "Looking up existing volume: ${NAME}"
 
     ## Check if volume already exists
     get_volume_id "${REGION}" "${NAME}"
@@ -322,7 +411,7 @@ data:
       echo "Creating volume: "
       jq '.' /tmp/volume-request.json
 
-      create_volume "${REGION}" $(jq -c '.' /tmp/volume-request.json)
+      create_volume "${REGION}" "${NAME}" "$(jq -c '.' /tmp/volume-request.json)"
     else
       echo "Existing volume found: ${NAME}"
     fi
